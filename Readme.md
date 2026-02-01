@@ -1,101 +1,311 @@
-# GO TO https://entra.microsoft.com/
-# Have Application Developer Role atleast
-# Go to App Registrations
-# Register Single Tenant Application ( Intially ) => DemoApi
-# Go to Expose an Api and add scope => api.all
+You have:
 
-To secure your backend API (DemoApi) using Microsoft Entra ID (formerly Azure AD), we need to configure Authentication (verifying who the user is) and Authorization (verifying what they are allowed to do).
+* **Backend API** → ASP.NET Core (secured API)
+* **Frontend Web App** → React + Vite + Shadcn UI
+* **Identity Provider** → **Azure Entra ID** (formerly Azure AD)
 
-Since you have already registered the app and created the api.all scope, here are the next steps to secure the backend:
+🎯 **Goal**
 
-1. Define App Roles (RBAC)
-While Scopes (Delegated Permissions) are great for user-facing apps, App Roles allow you to assign specific permissions to users or other services (Managed Identities).
+* User signs in via Entra ID from React
+* React gets an **access token**
+* React calls **Backend API**
+* Backend **validates token**, **authorizes by scopes/roles**
 
-In the DemoApi registration, go to App roles.
+---
 
-Click Create app role.
-
-Display name: Admin.Access
-
-Allowed member types: Both (Users/Groups + Applications).
-
-Value: API.Admin
-
-Description: Allows full admin access to the API.
-
-Click Apply.
-
-# Create a Demo API
+# 🧭 Big Picture (Mental Model)
 
 ```
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Identity.Web;
-using Scalar.AspNetCore;
-
-var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddOpenApi();
-
-// Authentication: The AddMicrosoftIdentityWebApi middleware automatically validates the JWT signature, issuer, and expiration.
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"));
-builder.Services.AddDbContext<ApiDbContext>(opt => opt.UseInMemoryDatabase("DemoInventory"));
-
-builder.Services.AddAuthorization();
-
-var app = builder.Build();
-app.MapOpenApi();
-app.MapScalarApiReference("/docs");
-
-app.UseHttpsRedirection();
-
-app.UseAuthentication();
-app.UseAuthorization();
-
-// Authorization: The .RequireAuthorization() extension ensures no one can hit the /api/products endpoint without a valid token from your specific Entra tenant.
-app.MapGet("/api/products", async (ApiDbContext db) => await db.Products.ToListAsync());
-
-app.MapPost("/api/products", async (ApiDbContext db, Product product) =>
-{
-    db.Products.Add(product);
-    await db.SaveChangesAsync();
-
-    return Results.Created($"/api/products/{product.Id}", product);
-})
-.RequireAuthorization(); // Protected with Entra ID
-
-
-app.Run();
-
-public class Product
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = string.Empty;
-    public decimal Price { get; set; }
-}
-
-public class ApiDbContext : DbContext
-{
-    public ApiDbContext(DbContextOptions<ApiDbContext> options) : base(options) { }
-    public DbSet<Product> Products => Set<Product>();
-}
+[ React App ] ──(login)──▶ [ Azure Entra ID ]
+     │                         │
+     │   access_token          │
+     └──────▶ [ Backend API ] ◀┘
+                 (JWT validation)
 ```
 
+We will do this in **7 clear steps**:
+
+1️⃣ Entra ID App Registration – Backend API
+2️⃣ Expose API (Scopes / App ID URI)
+3️⃣ Entra ID App Registration – Frontend (SPA)
+4️⃣ Grant API permissions (Frontend → Backend)
+5️⃣ Backend API configuration (ASP.NET Core)
+6️⃣ Frontend configuration (React + MSAL)
+7️⃣ Authorization (Scopes / Roles)
+
+We will **stop after each step** and validate.
+
+---
+
+## 🔹 STEP 1 — Register **Backend API** in Azure Entra ID
+
+This app represents **your secured API**.
+
+### 1. Go to Azure Portal
+
 ```
-{
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "Microsoft.AspNetCore": "Warning"
-    }
-  },
-  "AzureAd": {
-    "Instance": "https://login.microsoftonline.com/",
-    "Domain": "D",
-    "TenantId": "D8",
-    "ClientId": "D",
-    "Scopes": "api.all"
-  },
-  "AllowedHosts": "*"
-}
+Azure Portal → Microsoft Entra ID → App registrations → New registration
 ```
+
+### 2. Create the App
+
+Fill like this:
+
+* **Name**:
+
+  ```
+  WorkshopSaaS-Backend-API
+  ```
+
+* **Supported account types**:
+  ✅ *Accounts in this organizational directory only*
+  (Single-tenant – best for internal SaaS)
+
+* **Redirect URI**:
+  ❌ Leave empty (API does NOT need redirect)
+
+👉 Click **Register**
+
+---
+
+### 3. Note these values (VERY IMPORTANT)
+
+From **Overview** page:
+
+* 📌 **Application (client) ID**
+* 📌 **Directory (tenant) ID**
+
+Save them somewhere:
+
+```
+Backend API
+- ClientId = xxxxx
+- TenantId = xxxxx
+```
+
+⚠️ Do NOT create secrets for API — **not needed**
+
+---
+
+## 🔹 STEP 2 — Expose the Backend API (Scopes)
+
+Now we tell Entra ID:
+
+> “This API can be called by other apps”
+
+### 1. Go to:
+
+```
+App registrations → WorkshopSaaS-Backend-API → Expose an API
+```
+
+### 2. Set Application ID URI
+
+Click **Set** and use:
+
+```
+api://<Backend-ClientId>
+```
+
+Example:
+
+```
+api://3c1f9c3e-xxxx-xxxx-xxxx-xxxx
+```
+
+Click **Save**
+
+---
+
+### 3. Create API Scope
+
+Click **Add a scope**
+
+Fill like this:
+
+* **Scope name**
+
+  ```
+  workshop.full_access
+  ```
+
+* **Who can consent**
+
+  ```
+  Admins
+  ```
+
+* **Admin consent display name**
+
+  ```
+  Access WorkshopSaaS API
+  ```
+
+* **Admin consent description**
+
+  ```
+  Allows the app to access WorkshopSaaS backend API on behalf of the signed-in user.
+  ```
+
+* **State** → Enabled ✅
+
+Click **Add scope**
+
+✔️ Backend API is now protected by **OAuth scopes**
+
+---
+
+## 🔹 STEP 3 — Register **Frontend React SPA**
+
+This app represents **your React UI**.
+
+### 1. New App Registration
+
+```
+App registrations → New registration
+```
+
+### 2. Fill details
+
+* **Name**
+
+  ```
+  WorkshopSaaS-Frontend
+  ```
+
+* **Supported account types**
+
+  ```
+  Single tenant
+  ```
+
+* **Redirect URI**
+
+  * Platform: **Single-page application (SPA)**
+  * URI (Vite default):
+
+    ```
+    http://localhost:5173
+    ```
+
+👉 Click **Register**
+
+---
+
+### 3. Save these values
+
+From Overview:
+
+```
+Frontend App
+- ClientId
+- TenantId
+```
+
+---
+
+## 🔹 STEP 4 — Configure Frontend as SPA
+
+Go to:
+
+```
+WorkshopSaaS-Frontend → Authentication
+```
+
+✔️ Make sure:
+
+* **Platform** = SPA
+* Redirect URI exists:
+
+  ```
+  http://localhost:5173
+  ```
+
+Enable:
+
+* ✅ **Access tokens**
+* ✅ **ID tokens**
+
+❌ No client secret needed (SPA rule)
+
+---
+
+## 🔹 STEP 5 — Grant API Permission (Frontend → Backend)
+
+This is where many people mess up — we won’t 🙂
+
+### 1. Go to:
+
+```
+WorkshopSaaS-Frontend → API permissions → Add a permission
+```
+
+### 2. Select:
+
+```
+My APIs → WorkshopSaaS-Backend-API
+```
+
+### 3. Choose:
+
+```
+Delegated permissions
+```
+
+✔️ Select:
+
+```
+access_as_user
+```
+
+Click **Add permissions**
+
+---
+
+### 4. Grant Admin Consent
+
+Click:
+
+```
+Grant admin consent for <Tenant>
+```
+
+✅ Status should turn **green**
+
+---
+
+## ✅ CHECKPOINT (VERY IMPORTANT)
+
+At this point:
+
+* ✔️ Backend API registered
+* ✔️ Scope created
+* ✔️ Frontend registered as SPA
+* ✔️ Frontend can request access token for API
+
+---
+### 🔹 STEP 6 — Backend API (.NET)
+
+We will configure:
+
+* `AddMicrosoftIdentityWebApi`
+* JWT validation
+* Scope authorization
+
+### 🔹 STEP 7 — React App
+
+We will configure:
+
+* `@azure/msal-browser`
+* `@azure/msal-react`
+* Login button
+* Call API with token
+
+---
+
+### 👉 Tell me:
+
+1️⃣ **ASP.NET Core version** (7 / 8 / 9?)
+2️⃣ Is your backend **Minimal API or Controllers?**
+
+Then we move to **STEP 6 – Backend API configuration** 🚀
