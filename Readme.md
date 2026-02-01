@@ -300,12 +300,3 @@ We will configure:
 * `@azure/msal-react`
 * Login button
 * Call API with token
-
----
-
-### 👉 Tell me:
-
-1️⃣ **ASP.NET Core version** (7 / 8 / 9?)
-2️⃣ Is your backend **Minimal API or Controllers?**
-
-Then we move to **STEP 6 – Backend API configuration** 🚀
